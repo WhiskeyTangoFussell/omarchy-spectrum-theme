@@ -36,22 +36,13 @@ There are no grey UI accents beyond the surfaces: everything that can be coloure
 ## Install
 
 ```bash
-omarchy theme install https://github.com/WhiskeyTangoFussell/Omarchy-Theme-Spectrum.git
+omarchy theme install https://github.com/WhiskeyTangoFussell/omarchy-spectrum-theme.git
 ```
 
-This clones the theme into `~/.config/omarchy/themes/` and applies it straight away. Omarchy names the theme
-after the repository, so it is listed as **omarchy-theme-spectrum** in the theme switcher
-(`SUPER + SHIFT + CTRL + SPACE`).
+This clones the theme into `~/.config/omarchy/themes/spectrum` and applies it straight away. It shows up as
+**spectrum** in the theme switcher (`SUPER + SHIFT + CTRL + SPACE`).
 
-To get it under the short name `spectrum` instead, clone it yourself:
-
-```bash
-git clone https://github.com/WhiskeyTangoFussell/Omarchy-Theme-Spectrum.git ~/.config/omarchy/themes/spectrum
-omarchy theme set spectrum
-```
-
-Update later with `omarchy theme update` (or `git pull` in the theme folder), and remove with
-`omarchy theme remove <name>`.
+Update later with `omarchy theme update`, and remove with `omarchy theme remove spectrum`.
 
 ## The matrix rain (optional)
 

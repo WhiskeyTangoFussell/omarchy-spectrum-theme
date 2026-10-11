@@ -22,7 +22,7 @@ so nothing has to be built. 19 tests pass with them.
 ```bash
 omarchy plugin add https://github.com/0x1ocean/omarchy-omatrix.git --enable   # if not installed yet
 cd ~/.config/omarchy/plugins/io.github.0x1ocean.omatrix
-git am /path/to/Omarchy-Theme-Spectrum/extras/omatrix/omatrix-local.patch
+git am /path/to/omarchy-spectrum-theme/extras/omatrix/omatrix-local.patch
 omarchy restart shell
 ```
 
