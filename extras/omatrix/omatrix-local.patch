@@ -1,0 +1,1719 @@
+From 9529cbdc46880aec470c222210f34d5202c5d9f5 Mon Sep 17 00:00:00 2001
+From: fussell <dhfussell@gmail.com>
+Date: Fri, 9 Oct 2026 20:45:04 -0400
+Subject: [PATCH 1/4] Add tail colour groups, justified columns, fractional
+ delays
+
+- tail_colors: "|"-separated hue groups of ","-separated shades (max 12),
+  rendered from palette slots 8..19
+- justify_columns: spread drawn columns flush to both screen edges
+- update_delay / battery_update_delay accept non-integer values
+- shader: 20 palette slots, column stride, guard against uncovered texels
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ MatrixScreen.qml        |  27 +++++++++++++++++----
+ Service.qml             |   4 +++-
+ cmatrix.js              |  16 +++++++++++--
+ settings.js             |  52 +++++++++++++++++++++++++++++++++++++---
+ shaders/matrix.frag     |  36 +++++++++++++++++++++-------
+ shaders/matrix.frag.qsb | Bin 3872 -> 4383 bytes
+ 6 files changed, 116 insertions(+), 19 deletions(-)
+
+diff --git a/MatrixScreen.qml b/MatrixScreen.qml
+index 81fe2d3..ba407e0 100644
+--- a/MatrixScreen.qml
++++ b/MatrixScreen.qml
+@@ -28,7 +28,7 @@ Item {
+   id: root
+ 
+   // cmatrix flags
+-  property int updateDelay: 4          // -u
++  property real updateDelay: 4         // -u
+   property bool asynchronous: false    // -a
+   property int boldLevel: 0            // -n 0, -b 1, -B 2
+   property string charset: "ascii"     // "ascii", "katakana" (-c), "console" (-l)
+@@ -37,6 +37,15 @@ Item {
+   property bool oldstyle: false        // -o
+   property bool rainbow: false         // -r
+ 
++  // Spread the drawn columns so the first is flush with the left edge of the
++  // screen and the last flush with the right, instead of the terminal's fixed
++  // two-cell pitch that leaves a ragged right edge.
++  property bool justifyColumns: false
++
++  // Tail colour groups as palette slot numbers (settings.tailGroups); empty
++  // for cmatrix's single -C colour.
++  property var tailGroups: []
++
+   // "wake": every time the screen becomes visible it starts as an empty
+   // terminal that fills up, like launching cmatrix. "full": start mid-run.
+   property string start: "wake"
+@@ -67,6 +76,11 @@ Item {
+   readonly property int ticksPerSecond: Math.round(1000 / CMatrix.intervalMs(updateDelay))
+   readonly property int cols: Math.max(2, Math.floor(width / cellWidth))
+   readonly property int lines: Math.max(4, Math.floor(height / cellHeight))
++  readonly property real columnStride: {
++    var drawnColumns = Math.ceil(cols / 2)
++    if (!justifyColumns || drawnColumns < 2) return 2 * cellWidth
++    return (width - cellWidth) / (drawnColumns - 1)
++  }
+   readonly property Profiler profiler: Profiler {
+     enabled: root.profile
+     grid: root.cols + "x" + root.lines + " cells " + root.cellWidth + "x" + root.cellHeight
+@@ -101,7 +115,8 @@ Item {
+     oldstyle: oldstyle,
+     rainbow: rainbow,
+     lambda: lambda,
+-    charset: charset
++    charset: charset,
++    tailGroups: tailGroups
+   })
+ 
+   property var engine: null
+@@ -164,11 +179,11 @@ Item {
+   }
+ 
+   function cellStyle(glyph, slot, bold) {
+-    var key = glyph * 16 + slot * 2 + bold
++    var key = (glyph * 256 + slot) * 2 + bold
+     var style = styleCache[key]
+     if (style === undefined) {
+       style = "#" + (glyph < 16 ? "0" : "") + glyph.toString(16)
+-        + "0" + slot.toString(16)
++        + (slot < 16 ? "0" : "") + slot.toString(16)
+         + "0" + bold.toString(16)
+       styleCache[key] = style
+     }
+@@ -340,8 +355,12 @@ Item {
+     property real atlasColumns: root.atlasColumns
+     property real atlasRows: root.atlasRows
+     property real glyphCount: root.glyphTable.glyphs.length
++    property real columnStride: root.columnStride
+     property matrix4x4 paletteA: root.paletteMatrix(0)
+     property matrix4x4 paletteB: root.paletteMatrix(4)
++    property matrix4x4 paletteC: root.paletteMatrix(8)
++    property matrix4x4 paletteD: root.paletteMatrix(12)
++    property matrix4x4 paletteE: root.paletteMatrix(16)
+     property var stateTex: stateCanvas
+     property var atlasTex: atlasCanvas
+ 
+diff --git a/Service.qml b/Service.qml
+index 53f9476..91606ed 100644
+--- a/Service.qml
++++ b/Service.qml
+@@ -76,7 +76,7 @@ Item {
+   readonly property bool locked: config.pauseWhenLocked && !!(lockService && lockService.locked)
+   readonly property bool onBattery: UPower.onBattery
+   readonly property bool batteryPaused: onBattery && config.onBattery === "pause"
+-  readonly property int effectiveUpdateDelay: onBattery && config.onBattery === "slow"
++  readonly property real effectiveUpdateDelay: onBattery && config.onBattery === "slow"
+     ? Math.max(config.updateDelay, config.batteryUpdateDelay)
+     : config.updateDelay
+ 
+@@ -216,6 +216,8 @@ Item {
+         changes: root.config.changes
+         oldstyle: root.config.oldstyle
+         rainbow: root.config.rainbow
++        justifyColumns: root.config.justifyColumns
++        tailGroups: Settings.tailGroups(root.config.tailColors)
+         start: root.config.start
+         wakeSerial: root.wakeSerial
+         rainOpacity: root.config.opacity
+diff --git a/cmatrix.js b/cmatrix.js
+index e825a0a..f625a6d 100644
+--- a/cmatrix.js
++++ b/cmatrix.js
+@@ -80,6 +80,7 @@ function normalizeOptions(opts) {
+     rainbow: !!opts.rainbow,
+     lambda: !!opts.lambda,
+     charset: opts.charset || "ascii",
++    tailGroups: Array.isArray(opts.tailGroups) ? opts.tailGroups.filter(function (g) { return g && g.length > 0 }) : [],
+     fastIdle: opts.fastIdle !== false,
+     random: typeof opts.random === "function" ? opts.random : defaultRandom
+   }
+@@ -101,6 +102,7 @@ function create(cols, lines, opts) {
+   var length = new Int32Array(cols)
+   var spaces = new Int32Array(cols)
+   var updates = new Int32Array(cols)
++  var groups = new Uint8Array(cols)      // tail colour group of each column's newest stream
+ 
+   for (var i = 0; i < cells.length; i++) cells[i] = EMPTY
+ 
+@@ -118,6 +120,7 @@ function create(cols, lines, opts) {
+     length[j] = o.random(lines - 3) + 3    // stream length
+     cells[cols + j] = SPACE                // matrix[1][j] = ' ' sentinel for creation
+     updates[j] = o.random(3) + 1           // -a pacing class
++    if (o.tailGroups.length > 0) groups[j] = o.random(o.tailGroups.length)
+   }
+ 
+   return {
+@@ -128,6 +131,7 @@ function create(cols, lines, opts) {
+     length: length,
+     spaces: spaces,
+     updates: updates,
++    groups: groups,
+     dirty: dirty,
+     dirtyFlags: dirtyFlags,
+     occupied: occupied,
+@@ -181,6 +185,7 @@ function tickColumnOldStyle(s, j, o) {
+     } else {
+       // Random number to determine whether head of next column of chars has
+       // a white 'head' on it.
++      if (o.tailGroups.length > 0) s.groups[j] = o.random(o.tailGroups.length)
+       if (o.random(3) === 1) setCell(s, j, HEAD_MARK)
+       else setCell(s, j, o.random(s.glyphCount))
+       s.spaces[j] = o.random(lines) + 1
+@@ -202,6 +207,7 @@ function tickColumnNewStyle(s, j, o) {
+     if (o.fastIdle && s.occupied[j] === 0) return
+   } else if (cells[j] === EMPTY && cells[cols + j] === SPACE) {
+     s.length[j] = o.random(lines - 3) + 3
++    if (o.tailGroups.length > 0) s.groups[j] = o.random(o.tailGroups.length)
+     setCell(s, j, o.random(s.glyphCount))
+     s.spaces[j] = o.random(lines) + 1
+   }
+@@ -288,6 +294,12 @@ function renderCell(s, o, frame, row, j) {
+ 
+   var color = COLOR_MATRIX
+   if (o.rainbow) color = RAINBOW_COLORS[o.random(6)]
++  else if (o.tailGroups.length > 0) {
++    // A cell is rendered when written and again when the head moves on, so
++    // the shade picked here stays put until the cell is erased.
++    var group = o.tailGroups[s.groups[j] % o.tailGroups.length]
++    color = group[o.random(group.length)]
++  }
+ 
+   if (val === PIPE) {
+     frame[out] = s.glyphCount + SPECIAL_PIPE
+@@ -337,8 +349,8 @@ function renderDirty(s, opts, frame, touched, touchedCount) {
+ // cmatrix's -u delay maps to napms(update * 10); update 0 means "as fast as
+ // the terminal can go", which for a compositor is one frame.
+ function intervalMs(updateDelay) {
+-  var u = Math.max(0, Math.min(10, Math.round(Number(updateDelay) || 0)))
+-  return u === 0 ? 16 : u * 10
++  var u = Math.max(0, Math.min(10, Number(updateDelay) || 0))
++  return u === 0 ? 16 : Math.round(u * 10)
+ }
+ 
+ // ---------------------------------------------------------------- settings
+diff --git a/settings.js b/settings.js
+index 365bb8a..d3d4cce 100644
+--- a/settings.js
++++ b/settings.js
+@@ -14,7 +14,9 @@ var DEFAULTS = {
+   changes: false,
+   oldstyle: false,
+   rainbow: false,
++  justify_columns: false,
+   color: "green",
++  tail_colors: "",
+   head_color: "white",
+   opacity: 1.0,
+   backdrop_opacity: 0.0,
+@@ -102,7 +104,8 @@ function resolveColor(themeColors, value, fallbackName, fallbacks) {
+ function palette(settings, themeColors, fallbacks) {
+   // Accepts either a merged (snake_case) or a resolved (camelCase) object.
+   var head = settings.headColor !== undefined ? settings.headColor : settings.head_color
+-  return [
++  var tails = settings.tailColors !== undefined ? settings.tailColors : tailColors(settings.tail_colors)
++  var out = [
+     resolveColor(themeColors, head, "white", fallbacks),
+     resolveColor(themeColors, settings.color, "green", fallbacks),
+     ansi(themeColors, "green", fallbacks),
+@@ -112,6 +115,10 @@ function palette(settings, themeColors, fallbacks) {
+     ansi(themeColors, "cyan", fallbacks),
+     ansi(themeColors, "magenta", fallbacks)
+   ]
++  for (var i = 0; i < tails.length; i++) {
++    for (var k = 0; k < tails[i].length; k++) out.push(resolveColor(themeColors, tails[i][k], "green", fallbacks))
++  }
++  return out
+ }
+ 
+ function boldLevel(value) {
+@@ -120,11 +127,48 @@ function boldLevel(value) {
+   return 0
+ }
+ 
++// Palette slots 8.. hold the tail colours; the shader has 20 slots in all.
++var TAIL_SLOT = 8
++var MAX_TAIL_COLORS = 12
++
++// tail_colors: hue groups separated by "|", shades within a group by ",".
++// Each stream picks one group and each of its glyphs a random shade from it,
++// e.g. "#f8d,#f2b,#b07 | #d9f,#b4f,#70d". Empty means the single `color`.
++function tailColors(value) {
++  var groups = []
++  var total = 0
++  var parts = String(value === undefined || value === null ? "" : value).split("|")
++  for (var i = 0; i < parts.length; i++) {
++    var group = []
++    var shades = parts[i].split(",")
++    for (var k = 0; k < shades.length && total < MAX_TAIL_COLORS; k++) {
++      var shade = shades[k].trim()
++      if (!shade) continue
++      group.push(shade)
++      total++
++    }
++    if (group.length > 0) groups.push(group)
++  }
++  return groups
++}
++
++// The engine's view of tailColors: the same groups as palette slot numbers.
++function tailGroups(groups) {
++  var out = []
++  var slot = TAIL_SLOT
++  for (var i = 0; i < (groups || []).length; i++) {
++    var group = []
++    for (var k = 0; k < groups[i].length; k++) group.push(slot++)
++    out.push(group)
++  }
++  return out
++}
++
+ // Everything the renderer needs, typed and clamped.
+ function resolve(userSettings, themeSettings) {
+   var s = merge(userSettings, themeSettings)
+   return {
+-    updateDelay: Math.round(number(s.update_delay, 4, 0, 10)),
++    updateDelay: number(s.update_delay, 4, 0, 10),
+     asynchronous: bool(s.asynchronous, false),
+     boldLevel: boldLevel(s.bold),
+     charset: oneOf(s.charset, ["ascii", "katakana", "console"], "ascii"),
+@@ -132,7 +176,9 @@ function resolve(userSettings, themeSettings) {
+     changes: bool(s.changes, false),
+     oldstyle: bool(s.oldstyle, false),
+     rainbow: bool(s.rainbow, false),
++    justifyColumns: bool(s.justify_columns, false),
+     color: s.color,
++    tailColors: tailColors(s.tail_colors),
+     headColor: s.head_color,
+     opacity: number(s.opacity, 1, 0, 1),
+     backdropOpacity: number(s.backdrop_opacity, 0, 0, 1),
+@@ -144,7 +190,7 @@ function resolve(userSettings, themeSettings) {
+     pauseWhenCovered: bool(s.pause_when_covered, true),
+     pauseWhenLocked: bool(s.pause_when_locked, true),
+     onBattery: oneOf(s.on_battery, ["slow", "pause", "ignore"], "slow"),
+-    batteryUpdateDelay: Math.round(number(s.battery_update_delay, 6, 0, 10)),
++    batteryUpdateDelay: number(s.battery_update_delay, 6, 0, 10),
+     raw: s
+   }
+ }
+diff --git a/shaders/matrix.frag b/shaders/matrix.frag
+index b7406af..bcadbf0 100644
+--- a/shaders/matrix.frag
++++ b/shaders/matrix.frag
+@@ -19,34 +19,52 @@ layout(std140, binding = 0) uniform buf {
+     float atlasColumns;   // glyph slots per atlas row
+     float atlasRows;      // rows per weight (regular, then bold below)
+     float glyphCount;     // number of valid glyph indices
++    float columnStride;   // distance between the left edges of drawn (even) columns
+     mat4 paletteA;        // palette slots 0..3, one color per column
+     mat4 paletteB;        // palette slots 4..7
++    mat4 paletteC;        // palette slots 8..11 (tail colours)
++    mat4 paletteD;        // palette slots 12..15
++    mat4 paletteE;        // palette slots 16..19
+ };
+ 
+ layout(binding = 1) uniform sampler2D stateTex;
+ layout(binding = 2) uniform sampler2D atlasTex;
+ 
+ vec4 paletteColor(int slot) {
+-    if (slot == 0) return paletteA[0];
+-    if (slot == 1) return paletteA[1];
+-    if (slot == 2) return paletteA[2];
+-    if (slot == 3) return paletteA[3];
+-    if (slot == 4) return paletteB[0];
+-    if (slot == 5) return paletteB[1];
+-    if (slot == 6) return paletteB[2];
+-    return paletteB[3];
++    if (slot < 4) return paletteA[slot];
++    if (slot < 8) return paletteB[slot - 4];
++    if (slot < 12) return paletteC[slot - 8];
++    if (slot < 16) return paletteD[slot - 12];
++    return paletteE[min(slot, 19) - 16];
+ }
+ 
+ void main() {
+     vec2 px = qt_TexCoord0 * itemSize;
+     vec2 cell = floor(px / cellSize);
+ 
++    // cmatrix only draws even columns. Place them every columnStride pixels
++    // (2 cells for a terminal grid, wider when justified to the screen
++    // edges); anything between a column's glyph and the next is empty.
++    float column = floor(px.x / columnStride);
++    if (px.x - column * columnStride >= cellSize.x) {
++        fragColor = vec4(0.0);
++        return;
++    }
++    cell.x = column * 2.0;
++
+     if (cell.x < 0.0 || cell.y < 0.0 || cell.x >= gridSize.x || cell.y >= gridSize.y) {
+         fragColor = vec4(0.0);
+         return;
+     }
+ 
+     vec4 state = texture(stateTex, (cell + 0.5) / gridSize);
++    // Painted cells are opaque; a transparent texel is canvas the grid never
++    // covered (fractional scaling rounds the backing image up a row), which
++    // would otherwise decode as glyph 0, a row of white '!'.
++    if (state.a < 0.5) {
++        fragColor = vec4(0.0);
++        return;
++    }
+     float glyph = floor(state.r * 255.0 + 0.5);
+     if (glyph >= glyphCount) {
+         fragColor = vec4(0.0);
+@@ -60,7 +78,7 @@ void main() {
+     float atlasCol = glyph - atlasRow * atlasColumns;
+     atlasRow += bold * atlasRows;
+ 
+-    vec2 local = px - cell * cellSize;
++    vec2 local = vec2(px.x - column * columnStride, px.y - cell.y * cellSize.y);
+     vec2 atlasPx = vec2(atlasCol, atlasRow) * cellSize + local;
+     float coverage = texture(atlasTex, atlasPx / atlasSize).a;
+ 
+diff --git a/shaders/matrix.frag.qsb b/shaders/matrix.frag.qsb
+index 80a27c0735240b14eabecad0b841703aca6b78d2..2ddc159e94af9dda670561e95bc2e693715959ca 100644
+GIT binary patch
+literal 4383
+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
+Uva>I3oRg)ze*J&u|MD#^0HhTS`2YX_
+
+literal 3872
+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
+
+-- 
+2.56.0
+
+
+From 0dee4892f96da44837a8c5ad3962c8333abaf5e3 Mon Sep 17 00:00:00 2001
+From: fussell <dhfussell@gmail.com>
+Date: Sat, 10 Oct 2026 14:48:08 -0400
+Subject: [PATCH 2/4] Expose tailGroups and find a cloned omarchy.lock
+
+- lockService resolves through pluginRegistry.resolveEnabledId, so the
+  wallpaper rain still pauses when omarchy.lock has been cloned
+- tailGroups is a service property so the lock clone can reuse it
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Service.qml | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/Service.qml b/Service.qml
+index 91606ed..16aca9c 100644
+--- a/Service.qml
++++ b/Service.qml
+@@ -65,6 +65,8 @@ Item {
+     urgent: String(Color.urgent)
+   })
+   readonly property var palette: Settings.palette(config, themeColors, shellFallbacks)
++  // Shared with the lock screen clone, which draws its own MatrixScreen.
++  readonly property var tailGroups: Settings.tailGroups(config.tailColors)
+ 
+   // The layer is opaque in the theme's terminal background colour, so the
+   // compositor blends nothing and the wallpaper beneath is fully occluded.
+@@ -72,7 +74,14 @@ Item {
+ 
+   // --------------------------------------------------------- pause logic
+ 
+-  readonly property var lockService: shell && shell.serviceFor ? shell.serviceFor("omarchy.lock") : null
++  // The built-in lock, or the user clone that replaced it
++  // (`omarchy plugin clone omarchy.lock`).
++  readonly property var lockService: {
++    if (!shell || !shell.serviceFor) return null
++    var registry = shell.pluginRegistry
++    var id = registry && registry.resolveEnabledId ? registry.resolveEnabledId("omarchy.lock") : "omarchy.lock"
++    return shell.serviceFor(id) || shell.serviceFor("omarchy.lock")
++  }
+   readonly property bool locked: config.pauseWhenLocked && !!(lockService && lockService.locked)
+   readonly property bool onBattery: UPower.onBattery
+   readonly property bool batteryPaused: onBattery && config.onBattery === "pause"
+@@ -217,7 +226,7 @@ Item {
+         oldstyle: root.config.oldstyle
+         rainbow: root.config.rainbow
+         justifyColumns: root.config.justifyColumns
+-        tailGroups: Settings.tailGroups(root.config.tailColors)
++        tailGroups: root.tailGroups
+         start: root.config.start
+         wakeSerial: root.wakeSerial
+         rainOpacity: root.config.opacity
+-- 
+2.56.0
+
+
+From 8b4dcb8d259c6a4e0be4ffedb78659eba410a313 Mon Sep 17 00:00:00 2001
+From: fussell <dhfussell@gmail.com>
+Date: Sat, 10 Oct 2026 15:33:31 -0400
+Subject: [PATCH 3/4] Add tail_fade: per-stream brightness gradient
+
+- tail_fade (0..1, default 0 = off): each stream is brightest just behind
+  its head and dims linearly toward the layer behind it, to (1 - tail_fade)
+  at its oldest glyph
+- engine tracks per-column update counts and per-cell write times, so a
+  cell's distance behind its head survives the head leaving the screen
+- fade level packed into bits 1..5 of the frame's bold byte; shader scales
+  alpha by it. With a fade, shades are a hash of the cell (no flicker on
+  the per-tick full render)
+- tests for fade monotonicity, head brightness, stable shades, and
+  unchanged frames when the fade is off
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ MatrixScreen.qml        |  20 ++++++++-----
+ Service.qml             |   1 +
+ cmatrix.js              |  63 +++++++++++++++++++++++++++++++++++++---
+ settings.js             |   2 ++
+ shaders/matrix.frag     |   8 +++--
+ shaders/matrix.frag.qsb | Bin 4383 -> 4666 bytes
+ tests/engine.test.js    |  48 ++++++++++++++++++++++++++++++
+ 7 files changed, 129 insertions(+), 13 deletions(-)
+
+diff --git a/MatrixScreen.qml b/MatrixScreen.qml
+index ba407e0..6307ac2 100644
+--- a/MatrixScreen.qml
++++ b/MatrixScreen.qml
+@@ -45,6 +45,9 @@ Item {
+   // Tail colour groups as palette slot numbers (settings.tailGroups); empty
+   // for cmatrix's single -C colour.
+   property var tailGroups: []
++  // 0..1: how far each tail dims from just behind the head to its oldest
++  // cell (0 = off, every glyph at full colour).
++  property real tailFade: 0
+ 
+   // "wake": every time the screen becomes visible it starts as an empty
+   // terminal that fills up, like launching cmatrix. "full": start mid-run.
+@@ -116,7 +119,8 @@ Item {
+     rainbow: rainbow,
+     lambda: lambda,
+     charset: charset,
+-    tailGroups: tailGroups
++    tailGroups: tailGroups,
++    tailFade: tailFade
+   })
+ 
+   property var engine: null
+@@ -155,10 +159,12 @@ Item {
+     CMatrix.tick(engine, options)
+     var t1 = profiler.now()
+ 
+-    // Rainbow recolours every cell each frame and old-style scrolling moves
+-    // every cell, so those take the full path; otherwise only the handful of
+-    // cells cmatrix wrote are re-rendered, like ncurses updating a terminal.
+-    if (options.rainbow || options.oldstyle || fullRender
++    // Rainbow recolours every cell each frame, old-style scrolling moves
++    // every cell and a tail fade re-dims every tail as its head advances, so
++    // those take the full path (paintCell still skips unchanged cells);
++    // otherwise only the handful of cells cmatrix wrote are re-rendered,
++    // like ncurses updating a terminal.
++    if (options.rainbow || options.oldstyle || options.tailFade > 0 || fullRender
+         || touchedCount + engine.dirtyCount > touched.length) {
+       CMatrix.render(engine, options, frame)
+       fullRender = true
+@@ -179,12 +185,12 @@ Item {
+   }
+ 
+   function cellStyle(glyph, slot, bold) {
+-    var key = (glyph * 256 + slot) * 2 + bold
++    var key = (glyph * 256 + slot) * 256 + bold
+     var style = styleCache[key]
+     if (style === undefined) {
+       style = "#" + (glyph < 16 ? "0" : "") + glyph.toString(16)
+         + (slot < 16 ? "0" : "") + slot.toString(16)
+-        + "0" + bold.toString(16)
++        + (bold < 16 ? "0" : "") + bold.toString(16)
+       styleCache[key] = style
+     }
+     return style
+diff --git a/Service.qml b/Service.qml
+index 16aca9c..78d4630 100644
+--- a/Service.qml
++++ b/Service.qml
+@@ -227,6 +227,7 @@ Item {
+         rainbow: root.config.rainbow
+         justifyColumns: root.config.justifyColumns
+         tailGroups: root.tailGroups
++        tailFade: root.config.tailFade
+         start: root.config.start
+         wakeSerial: root.wakeSerial
+         rainOpacity: root.config.opacity
+diff --git a/cmatrix.js b/cmatrix.js
+index f625a6d..351c850 100644
+--- a/cmatrix.js
++++ b/cmatrix.js
+@@ -81,6 +81,7 @@ function normalizeOptions(opts) {
+     lambda: !!opts.lambda,
+     charset: opts.charset || "ascii",
+     tailGroups: Array.isArray(opts.tailGroups) ? opts.tailGroups.filter(function (g) { return g && g.length > 0 }) : [],
++    tailFade: Math.max(0, Math.min(1, Number(opts.tailFade) || 0)),
+     fastIdle: opts.fastIdle !== false,
+     random: typeof opts.random === "function" ? opts.random : defaultRandom
+   }
+@@ -115,6 +116,13 @@ function create(cols, lines, opts) {
+   // spaces[] has nothing for the per-tick walk to find, so it can be skipped.
+   var occupied = new Int32Array(cols)
+ 
++  // Tail fade bookkeeping: each column counts its own updates, and every cell
++  // remembers the count it was written at, so a cell's age is its distance
++  // behind its stream's head even after the head has left the screen.
++  var colTick = new Int32Array(cols)
++  var birth = new Int32Array(cells.length)
++  var span = new Int32Array(cells.length)   // stream length the cell last fell under
++
+   for (var j = 0; j < cols; j += 2) {
+     spaces[j] = o.random(lines) + 1        // how many blank rows before the next stream
+     length[j] = o.random(lines - 3) + 3    // stream length
+@@ -135,6 +143,9 @@ function create(cols, lines, opts) {
+     dirty: dirty,
+     dirtyFlags: dirtyFlags,
+     occupied: occupied,
++    colTick: colTick,
++    birth: birth,
++    span: span,
+     dirtyCount: 0,
+     count: 0,
+     glyphCount: table.count,
+@@ -154,6 +165,7 @@ function setCell(s, idx, value) {
+   if (old === value) return
+   s.cells[idx] = value
+   if ((old >= 0) !== (value >= 0)) s.occupied[idx % s.cols] += value >= 0 ? 1 : -1
++  if (value >= 0 && old < 0) s.birth[idx] = s.colTick[idx % s.cols]
+   markDirty(s, idx)
+ }
+ 
+@@ -262,6 +274,7 @@ function tick(s, opts) {
+ 
+   for (var j = 0; j < s.cols; j += 2) {
+     if (s.count > s.updates[j] || !o.asynch) {
++      s.colTick[j]++
+       if (o.oldstyle) tickColumnOldStyle(s, j, o)
+       else tickColumnNewStyle(s, j, o)
+     }
+@@ -272,7 +285,7 @@ function tick(s, opts) {
+ // (glyph index, palette slot, bold flag) per cell in `frame`, which must be
+ // a Uint8Array of at least cols * lines * 3 bytes. Mirrors the attron /
+ // addch sequence that follows each column update upstream.
+-function renderCell(s, o, frame, row, j) {
++function renderCell(s, o, frame, row, j, dim) {
+   var cols = s.cols
+   var out = (row * cols + j) * 3
+   var idx = (row + (o.oldstyle ? 0 : 1)) * cols + j
+@@ -298,7 +311,12 @@ function renderCell(s, o, frame, row, j) {
+     // A cell is rendered when written and again when the head moves on, so
+     // the shade picked here stays put until the cell is erased.
+     var group = o.tailGroups[s.groups[j] % o.tailGroups.length]
+-    color = group[o.random(group.length)]
++    // With a tail fade every cell is re-rendered each tick, so its shade must
++    // be a pure function of the cell (position, glyph, write time), not a
++    // fresh random pick, or the tails would flicker.
++    color = o.tailFade > 0
++      ? group[(((Math.imul(idx, 0x9e3779b1) ^ Math.imul(val + 1, 0x85ebca6b) ^ s.birth[idx]) >>> 3) % group.length)]
++      : group[o.random(group.length)]
+   }
+ 
+   if (val === PIPE) {
+@@ -312,14 +330,51 @@ function renderCell(s, o, frame, row, j) {
+   var bold = o.bold === 2 || (o.bold === 1 && (codepoint % 2) === 0)
+   frame[out] = o.lambda ? s.glyphCount + SPECIAL_LAMBDA : val
+   frame[out + 1] = color
+-  frame[out + 2] = bold ? 1 : 0
++  // Bit 0: bold. Bits 1..5: tail fade level (0 = full brightness, FADE_LEVELS
++  // = faded to the configured floor), decoded by the shader.
++  frame[out + 2] = (bold ? 1 : 0) | ((dim || 0) << 1)
++}
++
++var FADE_LEVELS = 31
++
++// Fade level of every visible cell in column j, written to dims[row]. A
++// stream is brightest right behind its head and dims linearly to
++// (1 - tailFade) at its oldest cell.
++function columnFade(s, o, j, dims) {
++  var cols = s.cols, lines = s.lines, cells = s.cells
++  var tick = s.colTick[j]
++  for (var r = 0; r < lines; r++) dims[r] = 0
++  var i = 0
++  while (i <= lines) {
++    while (i <= lines && cells[i * cols + j] < 0) i++
++    if (i > lines) break
++    var z = i
++    while (i <= lines && cells[i * cols + j] >= 0) i++
++    var e = i - 1
++    // While the head is on screen the stream's length is the age of its
++    // oldest cell; remember it so the tail keeps its gradient once the head
++    // has fallen off the bottom.
++    var len = s.heads[e * cols + j] ? tick - s.birth[z * cols + j] : s.span[z * cols + j]
++    if (len < 2) len = 2
++    for (var c = z; c <= e; c++) {
++      var idx = c * cols + j
++      s.span[idx] = len
++      if (c === 0) continue
++      var age = tick - s.birth[idx]
++      var t = Math.max(0, Math.min(1, (age - 1) / (len - 1)))
++      dims[c - 1] = Math.round(t * o.tailFade * FADE_LEVELS)
++    }
++  }
+ }
+ 
+ // Full redraw of every visible cell (a terminal `clear` + repaint).
+ function render(s, opts, frame) {
+   var o = normalizeOptions(opts)
++  var fade = o.tailFade > 0 && !o.oldstyle
++  var dims = fade ? new Uint8Array(s.lines) : null
+   for (var j = 0; j < s.cols; j++) {
+-    for (var row = 0; row < s.lines; row++) renderCell(s, o, frame, row, j)
++    if (fade && (j & 1) === 0) columnFade(s, o, j, dims)
++    for (var row = 0; row < s.lines; row++) renderCell(s, o, frame, row, j, fade ? dims[row] : 0)
+   }
+   clearDirty(s)
+ }
+diff --git a/settings.js b/settings.js
+index d3d4cce..c6a774d 100644
+--- a/settings.js
++++ b/settings.js
+@@ -17,6 +17,7 @@ var DEFAULTS = {
+   justify_columns: false,
+   color: "green",
+   tail_colors: "",
++  tail_fade: 0,
+   head_color: "white",
+   opacity: 1.0,
+   backdrop_opacity: 0.0,
+@@ -179,6 +180,7 @@ function resolve(userSettings, themeSettings) {
+     justifyColumns: bool(s.justify_columns, false),
+     color: s.color,
+     tailColors: tailColors(s.tail_colors),
++    tailFade: number(s.tail_fade, 0, 0, 1),
+     headColor: s.head_color,
+     opacity: number(s.opacity, 1, 0, 1),
+     backdropOpacity: number(s.backdrop_opacity, 0, 0, 1),
+diff --git a/shaders/matrix.frag b/shaders/matrix.frag
+index bcadbf0..e49bb2c 100644
+--- a/shaders/matrix.frag
++++ b/shaders/matrix.frag
+@@ -72,7 +72,11 @@ void main() {
+     }
+ 
+     int slot = int(floor(state.g * 255.0 + 0.5));
+-    float bold = floor(state.b * 255.0 + 0.5) > 0.5 ? 1.0 : 0.0;
++    // Blue byte: bit 0 bold, bits 1..5 tail fade level (0 = full colour,
++    // 31 = dimmest), so a fading tail blends toward the layer behind it.
++    float flags = floor(state.b * 255.0 + 0.5);
++    float bold = mod(flags, 2.0);
++    float brightness = 1.0 - floor(flags / 2.0) / 31.0;
+ 
+     float atlasRow = floor(glyph / atlasColumns);
+     float atlasCol = glyph - atlasRow * atlasColumns;
+@@ -83,6 +87,6 @@ void main() {
+     float coverage = texture(atlasTex, atlasPx / atlasSize).a;
+ 
+     vec4 color = paletteColor(slot);
+-    float alpha = color.a * coverage * qt_Opacity;
++    float alpha = color.a * coverage * brightness * qt_Opacity;
+     fragColor = vec4(color.rgb * alpha, alpha);
+ }
+diff --git a/shaders/matrix.frag.qsb b/shaders/matrix.frag.qsb
+index 2ddc159e94af9dda670561e95bc2e693715959ca..63645ad17e312f960467db1eedb6640d4e0f5221 100644
+GIT binary patch
+literal 4666
+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
+
+literal 4383
+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
+Uva>I3oRg)ze*J&u|MD#^0HhTS`2YX_
+
+diff --git a/tests/engine.test.js b/tests/engine.test.js
+index 8576d9e..9acc1ad 100644
+--- a/tests/engine.test.js
++++ b/tests/engine.test.js
+@@ -248,3 +248,51 @@ test("flat toml reader handles the value shapes a theme file uses", () => {
+   ].join("\n"))
+   assert.deepEqual(plain(parsed), { bold: "partial", update_delay: 4, asynchronous: true, color: "#549e6a", opacity: 0.9 })
+ })
++
++test("tail fade: heads at full brightness, tails dim away from the head", () => {
++  const groups = [[8, 9], [10, 11]]
++  const opts = M.prepareOptions({ random: seededRandom(11), tailGroups: groups, tailFade: 0.8 })
++  const s = M.create(60, 30, opts)
++  const frame = new Uint8Array(s.cols * s.lines * 3)
++  const maxDim = Math.round(0.8 * 31)
++  let checkedRuns = 0
++  for (let step = 0; step < 400; step++) {
++    M.tick(s, opts)
++    M.render(s, opts, frame)
++    for (let j = 0; j < s.cols; j += 2) {
++      for (const seg of segmentsOf(s, j)) {
++        let below = -1
++        // Walk from the bottom (head end) up: the fade level never decreases.
++        for (let r = seg.end; r >= seg.start; r--) {
++          const k = ((r - 1) * s.cols + j) * 3
++          const dim = frame[k + 2] >> 1
++          assert.ok(dim <= maxDim, "dim within configured floor")
++          if (frame[k + 1] === 0) assert.equal(dim, 0, "heads are never faded")
++          if (below >= 0) assert.ok(dim >= below, "dims away from the head")
++          below = dim
++        }
++        if (seg.end - seg.start >= 4) checkedRuns++
++      }
++    }
++  }
++  assert.ok(checkedRuns > 100, "exercised real streams")
++})
++
++test("tail fade: shades are stable between renders and fade 0 leaves frames unchanged", () => {
++  const groups = [[8, 9, 10]]
++  const fadeOpts = M.prepareOptions({ random: seededRandom(5), tailGroups: groups, tailFade: 0.5 })
++  const s = M.create(40, 20, fadeOpts)
++  for (let step = 0; step < 60; step++) M.tick(s, fadeOpts)
++  const a = new Uint8Array(s.cols * s.lines * 3)
++  const b = new Uint8Array(s.cols * s.lines * 3)
++  M.render(s, fadeOpts, a)
++  M.render(s, fadeOpts, b)
++  assert.deepEqual(Array.from(a), Array.from(b))
++
++  const plainOpts = M.prepareOptions({ random: seededRandom(5), tailGroups: groups })
++  const p = M.create(40, 20, plainOpts)
++  for (let step = 0; step < 60; step++) M.tick(p, plainOpts)
++  const f = new Uint8Array(p.cols * p.lines * 3)
++  M.render(p, plainOpts, f)
++  for (let k = 2; k < f.length; k += 3) assert.ok(f[k] <= 1, "no fade bits without tail_fade")
++})
+-- 
+2.56.0
+
+
+From 56faba0e37686989d6974f6e717a9aa6c0c80b87 Mon Sep 17 00:00:00 2001
+From: fussell <dhfussell@gmail.com>
+Date: Sat, 10 Oct 2026 15:44:37 -0400
+Subject: [PATCH 4/4] Add tail_hue_shift; keep each stream's colour under
+ positional tails
+
+- tail_hue_shift (0..12, default 0 = off): from head to tail end each
+  stream sweeps forward through that many tail colours (tail_colors order,
+  wrapping), blended in eighths by the shader (colour byte bits 5..7,
+  new tailCount uniform)
+- fix (from tail_fade): groups[j] only tracks a column's newest stream, so
+  with every cell re-rendered each tick an older stream recoloured when a
+  new one started above it. Cells now record their stream's group at write
+  time (inherited from the cell above)
+- tests: hue sweep stays within [0, shift] and moves away from the head;
+  cells keep their stream colour across re-renders (fails without the fix)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ MatrixScreen.qml        |  15 ++++++-
+ Service.qml             |   1 +
+ cmatrix.js              |  84 ++++++++++++++++++++++++++++++----------
+ settings.js             |   2 +
+ shaders/matrix.frag     |  11 +++++-
+ shaders/matrix.frag.qsb | Bin 4666 -> 5138 bytes
+ tests/engine.test.js    |  60 +++++++++++++++++++++++++++-
+ 7 files changed, 148 insertions(+), 25 deletions(-)
+
+diff --git a/MatrixScreen.qml b/MatrixScreen.qml
+index 6307ac2..b11b17b 100644
+--- a/MatrixScreen.qml
++++ b/MatrixScreen.qml
+@@ -48,6 +48,15 @@ Item {
+   // 0..1: how far each tail dims from just behind the head to its oldest
+   // cell (0 = off, every glyph at full colour).
+   property real tailFade: 0
++  // How many tail colours (in tail_colors order, wrapping) each stream
++  // sweeps through from its head to its oldest cell, blended smoothly.
++  // 0 = off. Works best with one shade per group, listed in hue order.
++  property real tailHueShift: 0
++  readonly property int tailColorCount: {
++    var n = 0
++    for (var g = 0; g < tailGroups.length; g++) n += tailGroups[g].length
++    return Math.max(1, n)
++  }
+ 
+   // "wake": every time the screen becomes visible it starts as an empty
+   // terminal that fills up, like launching cmatrix. "full": start mid-run.
+@@ -120,7 +129,8 @@ Item {
+     lambda: lambda,
+     charset: charset,
+     tailGroups: tailGroups,
+-    tailFade: tailFade
++    tailFade: tailFade,
++    tailHueShift: tailHueShift
+   })
+ 
+   property var engine: null
+@@ -164,7 +174,7 @@ Item {
+     // those take the full path (paintCell still skips unchanged cells);
+     // otherwise only the handful of cells cmatrix wrote are re-rendered,
+     // like ncurses updating a terminal.
+-    if (options.rainbow || options.oldstyle || options.tailFade > 0 || fullRender
++    if (options.rainbow || options.oldstyle || options.tailFade > 0 || options.tailHueShift > 0 || fullRender
+         || touchedCount + engine.dirtyCount > touched.length) {
+       CMatrix.render(engine, options, frame)
+       fullRender = true
+@@ -367,6 +377,7 @@ Item {
+     property matrix4x4 paletteC: root.paletteMatrix(8)
+     property matrix4x4 paletteD: root.paletteMatrix(12)
+     property matrix4x4 paletteE: root.paletteMatrix(16)
++    property real tailCount: root.tailColorCount
+     property var stateTex: stateCanvas
+     property var atlasTex: atlasCanvas
+ 
+diff --git a/Service.qml b/Service.qml
+index 78d4630..cefb0db 100644
+--- a/Service.qml
++++ b/Service.qml
+@@ -228,6 +228,7 @@ Item {
+         justifyColumns: root.config.justifyColumns
+         tailGroups: root.tailGroups
+         tailFade: root.config.tailFade
++        tailHueShift: root.config.tailHueShift
+         start: root.config.start
+         wakeSerial: root.wakeSerial
+         rainOpacity: root.config.opacity
+diff --git a/cmatrix.js b/cmatrix.js
+index 351c850..ae0bf53 100644
+--- a/cmatrix.js
++++ b/cmatrix.js
+@@ -82,6 +82,7 @@ function normalizeOptions(opts) {
+     charset: opts.charset || "ascii",
+     tailGroups: Array.isArray(opts.tailGroups) ? opts.tailGroups.filter(function (g) { return g && g.length > 0 }) : [],
+     tailFade: Math.max(0, Math.min(1, Number(opts.tailFade) || 0)),
++    tailHueShift: Math.max(0, Math.min(12, Number(opts.tailHueShift) || 0)),
+     fastIdle: opts.fastIdle !== false,
+     random: typeof opts.random === "function" ? opts.random : defaultRandom
+   }
+@@ -122,6 +123,10 @@ function create(cols, lines, opts) {
+   var colTick = new Int32Array(cols)
+   var birth = new Int32Array(cells.length)
+   var span = new Int32Array(cells.length)   // stream length the cell last fell under
++  // Colour group of the stream each cell belongs to. groups[j] only tracks a
++  // column's newest stream, so an older stream still falling below it keeps
++  // its own colour when every cell is re-rendered.
++  var cellGroup = new Uint8Array(cells.length)
+ 
+   for (var j = 0; j < cols; j += 2) {
+     spaces[j] = o.random(lines) + 1        // how many blank rows before the next stream
+@@ -146,6 +151,7 @@ function create(cols, lines, opts) {
+     colTick: colTick,
+     birth: birth,
+     span: span,
++    cellGroup: cellGroup,
+     dirtyCount: 0,
+     count: 0,
+     glyphCount: table.count,
+@@ -165,7 +171,13 @@ function setCell(s, idx, value) {
+   if (old === value) return
+   s.cells[idx] = value
+   if ((old >= 0) !== (value >= 0)) s.occupied[idx % s.cols] += value >= 0 ? 1 : -1
+-  if (value >= 0 && old < 0) s.birth[idx] = s.colTick[idx % s.cols]
++  if (value >= 0 && old < 0) {
++    var j = idx % s.cols
++    s.birth[idx] = s.colTick[j]
++    // A head advancing continues the stream above it; a cell with nothing
++    // above starts a new stream in the column's current group.
++    s.cellGroup[idx] = idx >= s.cols && s.cells[idx - s.cols] >= 0 ? s.cellGroup[idx - s.cols] : s.groups[j]
++  }
+   markDirty(s, idx)
+ }
+ 
+@@ -285,7 +297,7 @@ function tick(s, opts) {
+ // (glyph index, palette slot, bold flag) per cell in `frame`, which must be
+ // a Uint8Array of at least cols * lines * 3 bytes. Mirrors the attron /
+ // addch sequence that follows each column update upstream.
+-function renderCell(s, o, frame, row, j, dim) {
++function renderCell(s, o, frame, row, j, t) {
+   var cols = s.cols
+   var out = (row * cols + j) * 3
+   var idx = (row + (o.oldstyle ? 0 : 1)) * cols + j
+@@ -310,13 +322,24 @@ function renderCell(s, o, frame, row, j, dim) {
+   else if (o.tailGroups.length > 0) {
+     // A cell is rendered when written and again when the head moves on, so
+     // the shade picked here stays put until the cell is erased.
+-    var group = o.tailGroups[s.groups[j] % o.tailGroups.length]
+-    // With a tail fade every cell is re-rendered each tick, so its shade must
+-    // be a pure function of the cell (position, glyph, write time), not a
+-    // fresh random pick, or the tails would flicker.
+-    color = o.tailFade > 0
+-      ? group[(((Math.imul(idx, 0x9e3779b1) ^ Math.imul(val + 1, 0x85ebca6b) ^ s.birth[idx]) >>> 3) % group.length)]
+-      : group[o.random(group.length)]
++    var group = o.tailGroups[(positional(o) ? s.cellGroup[idx] : s.groups[j]) % o.tailGroups.length]
++    if (o.tailHueShift > 0) {
++      // Hue sweep: from the stream's own colour at the head, forward through
++      // the flat tail colour list (palette slots 8.., wrapping) by
++      // tailHueShift colours at the tail end. The fractional part becomes a
++      // blend toward the next slot in eighths, done by the shader.
++      var n = tailColorCount(o)
++      var pos = (group[0] - TAIL_SLOT) + (t || 0) * o.tailHueShift
++      var step = Math.floor(pos)
++      color = TAIL_SLOT + (step % n) | (Math.min(7, Math.floor((pos - step) * HUE_STEPS)) << 5)
++    } else if (o.tailFade > 0) {
++      // With a tail fade every cell is re-rendered each tick, so its shade
++      // must be a pure function of the cell (position, glyph, write time),
++      // not a fresh random pick, or the tails would flicker.
++      color = group[(((Math.imul(idx, 0x9e3779b1) ^ Math.imul(val + 1, 0x85ebca6b) ^ s.birth[idx]) >>> 3) % group.length)]
++    } else {
++      color = group[o.random(group.length)]
++    }
+   }
+ 
+   if (val === PIPE) {
+@@ -332,18 +355,38 @@ function renderCell(s, o, frame, row, j, dim) {
+   frame[out + 1] = color
+   // Bit 0: bold. Bits 1..5: tail fade level (0 = full brightness, FADE_LEVELS
+   // = faded to the configured floor), decoded by the shader.
+-  frame[out + 2] = (bold ? 1 : 0) | ((dim || 0) << 1)
++  var dim = o.tailFade > 0 && color !== COLOR_HEAD ? Math.round((t || 0) * o.tailFade * FADE_LEVELS) : 0
++  frame[out + 2] = (bold ? 1 : 0) | (dim << 1)
+ }
+ 
+ var FADE_LEVELS = 31
++// Colour byte: bits 0..4 palette slot, bits 5..7 blend toward the next tail
++// slot in eighths (hue sweep only).
++var HUE_STEPS = 8
++var TAIL_SLOT = 8
+ 
+-// Fade level of every visible cell in column j, written to dims[row]. A
+-// stream is brightest right behind its head and dims linearly to
+-// (1 - tailFade) at its oldest cell.
+-function columnFade(s, o, j, dims) {
++function tailColorCount(o) {
++  if (o.__tailCount === undefined) {
++    var n = 0
++    for (var g = 0; g < o.tailGroups.length; g++) n += o.tailGroups[g].length
++    o.__tailCount = Math.max(1, n)
++  }
++  return o.__tailCount
++}
++
++// Whether tails depend on their position in the stream (and so need every
++// cell re-rendered each tick).
++function positional(o) {
++  return !o.oldstyle && !o.rainbow && o.tailGroups.length > 0 && (o.tailFade > 0 || o.tailHueShift > 0)
++}
++
++// Position of every visible cell in column j along its stream, written to
++// pos[row]: 0 right behind the head, 1 at the stream's oldest cell. The tail
++// fade and hue sweep are both functions of it.
++function columnPositions(s, o, j, pos) {
+   var cols = s.cols, lines = s.lines, cells = s.cells
+   var tick = s.colTick[j]
+-  for (var r = 0; r < lines; r++) dims[r] = 0
++  for (var r = 0; r < lines; r++) pos[r] = 0
+   var i = 0
+   while (i <= lines) {
+     while (i <= lines && cells[i * cols + j] < 0) i++
+@@ -361,8 +404,7 @@ function columnFade(s, o, j, dims) {
+       s.span[idx] = len
+       if (c === 0) continue
+       var age = tick - s.birth[idx]
+-      var t = Math.max(0, Math.min(1, (age - 1) / (len - 1)))
+-      dims[c - 1] = Math.round(t * o.tailFade * FADE_LEVELS)
++      pos[c - 1] = Math.max(0, Math.min(1, (age - 1) / (len - 1)))
+     }
+   }
+ }
+@@ -370,11 +412,11 @@ function columnFade(s, o, j, dims) {
+ // Full redraw of every visible cell (a terminal `clear` + repaint).
+ function render(s, opts, frame) {
+   var o = normalizeOptions(opts)
+-  var fade = o.tailFade > 0 && !o.oldstyle
+-  var dims = fade ? new Uint8Array(s.lines) : null
++  var along = positional(o)
++  var pos = along ? new Float32Array(s.lines) : null
+   for (var j = 0; j < s.cols; j++) {
+-    if (fade && (j & 1) === 0) columnFade(s, o, j, dims)
+-    for (var row = 0; row < s.lines; row++) renderCell(s, o, frame, row, j, fade ? dims[row] : 0)
++    if (along && (j & 1) === 0) columnPositions(s, o, j, pos)
++    for (var row = 0; row < s.lines; row++) renderCell(s, o, frame, row, j, along ? pos[row] : 0)
+   }
+   clearDirty(s)
+ }
+diff --git a/settings.js b/settings.js
+index c6a774d..8f45b41 100644
+--- a/settings.js
++++ b/settings.js
+@@ -18,6 +18,7 @@ var DEFAULTS = {
+   color: "green",
+   tail_colors: "",
+   tail_fade: 0,
++  tail_hue_shift: 0,
+   head_color: "white",
+   opacity: 1.0,
+   backdrop_opacity: 0.0,
+@@ -181,6 +182,7 @@ function resolve(userSettings, themeSettings) {
+     color: s.color,
+     tailColors: tailColors(s.tail_colors),
+     tailFade: number(s.tail_fade, 0, 0, 1),
++    tailHueShift: number(s.tail_hue_shift, 0, 0, 12),
+     headColor: s.head_color,
+     opacity: number(s.opacity, 1, 0, 1),
+     backdropOpacity: number(s.backdrop_opacity, 0, 0, 1),
+diff --git a/shaders/matrix.frag b/shaders/matrix.frag
+index e49bb2c..75781bf 100644
+--- a/shaders/matrix.frag
++++ b/shaders/matrix.frag
+@@ -25,6 +25,7 @@ layout(std140, binding = 0) uniform buf {
+     mat4 paletteC;        // palette slots 8..11 (tail colours)
+     mat4 paletteD;        // palette slots 12..15
+     mat4 paletteE;        // palette slots 16..19
++    float tailCount;      // tail colours in use (slots 8 .. 8 + tailCount - 1)
+ };
+ 
+ layout(binding = 1) uniform sampler2D stateTex;
+@@ -71,7 +72,11 @@ void main() {
+         return;
+     }
+ 
+-    int slot = int(floor(state.g * 255.0 + 0.5));
++    // Green byte: bits 0..4 palette slot, bits 5..7 a blend toward the next
++    // tail colour in eighths (tail hue sweep).
++    float colorByte = floor(state.g * 255.0 + 0.5);
++    int slot = int(mod(colorByte, 32.0));
++    float blend = floor(colorByte / 32.0) / 8.0;
+     // Blue byte: bit 0 bold, bits 1..5 tail fade level (0 = full colour,
+     // 31 = dimmest), so a fading tail blends toward the layer behind it.
+     float flags = floor(state.b * 255.0 + 0.5);
+@@ -87,6 +92,10 @@ void main() {
+     float coverage = texture(atlasTex, atlasPx / atlasSize).a;
+ 
+     vec4 color = paletteColor(slot);
++    if (blend > 0.0 && slot >= 8) {
++        int next = 8 + int(mod(float(slot - 8 + 1), max(tailCount, 1.0)));
++        color = mix(color, paletteColor(next), blend);
++    }
+     float alpha = color.a * coverage * brightness * qt_Opacity;
+     fragColor = vec4(color.rgb * alpha, alpha);
+ }
+diff --git a/shaders/matrix.frag.qsb b/shaders/matrix.frag.qsb
+index 63645ad17e312f960467db1eedb6640d4e0f5221..e5355eafa884a289078f767b064498372d6ee5c8 100644
+GIT binary patch
+literal 5138
+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
+
+literal 4666
+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
+
+diff --git a/tests/engine.test.js b/tests/engine.test.js
+index 9acc1ad..9d4d903 100644
+--- a/tests/engine.test.js
++++ b/tests/engine.test.js
+@@ -10,7 +10,7 @@ const vm = require("node:vm")
+ 
+ function loadEngine() {
+   const source = fs.readFileSync(path.join(__dirname, "..", "cmatrix.js"), "utf8")
+-  const context = { Math, Number, String, Int16Array, Int32Array, Uint8Array }
++  const context = { Math, Number, String, Int16Array, Int32Array, Uint8Array, Float32Array }
+   vm.createContext(context)
+   vm.runInContext(source.replace(/^\.pragma library\s*/, ""), context)
+   return context
+@@ -296,3 +296,61 @@ test("tail fade: shades are stable between renders and fade 0 leaves frames unch
+   M.render(p, plainOpts, f)
+   for (let k = 2; k < f.length; k += 3) assert.ok(f[k] <= 1, "no fade bits without tail_fade")
+ })
++
++test("tail hue shift: colour sweeps forward from the stream's own hue toward the tail end", () => {
++  const groups = [[8], [9], [10], [11], [12], [13]]
++  const shift = 2
++  const opts = M.prepareOptions({ random: seededRandom(3), tailGroups: groups, tailHueShift: shift, tailFade: 0.5 })
++  const s = M.create(60, 30, opts)
++  const frame = new Uint8Array(s.cols * s.lines * 3)
++  const n = 6
++  let checked = 0
++  for (let step = 0; step < 400; step++) {
++    M.tick(s, opts)
++    M.render(s, opts, frame)
++    for (let j = 0; j < s.cols; j += 2) {
++      for (const seg of segmentsOf(s, j)) {
++        const base = groups[s.cellGroup[seg.end * s.cols + j] % groups.length][0] - 8
++        let prev = -1
++        for (let r = seg.end - 1; r >= seg.start; r--) {
++          const k = ((r - 1) * s.cols + j) * 3
++          const byte = frame[k + 1]
++          const slot = byte & 31, sub = byte >> 5
++          assert.ok(slot >= 8 && slot < 8 + n, "tail slot in range")
++          // Unwrap relative to the stream's own colour; must stay within [0, shift].
++          const v = ((slot - 8 - base + n) % n) + sub / 8
++          assert.ok(v >= 0 && v <= shift + 1e-9, "within sweep " + v)
++          if (prev >= 0) assert.ok(v >= prev - 1e-9, "sweeps forward away from the head")
++          prev = v
++          checked++
++        }
++      }
++    }
++  }
++  assert.ok(checked > 200, "exercised real streams")
++})
++
++test("positional tails: an older stream keeps its colour when a newer one starts above it", () => {
++  const groups = [[8], [9], [10], [11], [12], [13], [14], [15]]
++  const opts = M.prepareOptions({ random: seededRandom(21), tailGroups: groups, tailFade: 0.6 })
++  const s = M.create(40, 40, opts)
++  const frame = new Uint8Array(s.cols * s.lines * 3)
++  const seen = new Map()   // cell idx + birth -> palette slot
++  let compared = 0
++  for (let step = 0; step < 600; step++) {
++    M.tick(s, opts)
++    M.render(s, opts, frame)
++    for (let j = 0; j < s.cols; j += 2) {
++      for (let r = 1; r <= s.lines; r++) {
++        const idx = r * s.cols + j
++        const k = ((r - 1) * s.cols + j) * 3
++        if (s.cells[idx] < 0 || frame[k + 1] === 0) continue
++        const key = idx + ":" + s.birth[idx]
++        const slot = frame[k + 1] & 31
++        if (seen.has(key)) { assert.equal(slot, seen.get(key), "cell kept its stream colour"); compared++ }
++        else seen.set(key, slot)
++      }
++    }
++  }
++  assert.ok(compared > 1000, "exercised re-rendered cells")
++})
+-- 
+2.56.0
+

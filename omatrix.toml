@@ -1,0 +1,85 @@
+# omatrix — live cmatrix wallpaper settings for this theme.
+#
+# The presence of this file is what switches the rain on: the omatrix shell
+# plugin watches the active theme directory and only renders while the theme
+# ships an omatrix.toml. Any theme can opt in by adding one. Every key here
+# mirrors a cmatrix flag; the plugin entry in ~/.config/omarchy/shell.json
+# can override any of them per machine.
+
+# -u delay (0 - 10). cmatrix sleeps delay * 10 ms between screen updates,
+# so 4 is the stock 25 Hz terminal cadence.
+update_delay = 9.375
+
+# -a: asynchronous scroll — columns advance in three different pacing classes.
+asynchronous = false
+
+# -n / -b / -B → "none", "partial", "all". With "partial" every glyph whose
+# character code is even is bold, plus all heads.
+bold = "all"
+
+# Glyph range: "ascii" (plain terminal, '!'..'z'), "katakana" (-c),
+# or "console" (-l, the mtx console font range).
+charset = "ascii"
+
+# -m: lambda mode. Every tail glyph is λ.
+lambda = false
+
+# -k: characters change while scrolling.
+changes = false
+
+# -o: old-style scrolling.
+oldstyle = false
+
+# -r: rainbow mode.
+rainbow = false
+
+# -C color: an ANSI name (green, red, blue, white, yellow, cyan, magenta,
+# black) resolved through the theme's colors.toml, or a #rrggbb literal.
+color = "green"
+
+# Heads are COLOR_WHITE in ncurses, which the terminal maps to `foreground`.
+# Set an ANSI name or #rrggbb literal to change it.
+head_color = "#ffffff"
+
+# Rain opacity and an optional black scrim between the rain and the wallpaper.
+opacity = 1.0
+backdrop_opacity = 0.0
+
+# "wake": whenever the rain becomes visible (theme switch, unlock, a
+# fullscreen window closing) it starts as an empty terminal that fills up,
+# like launching cmatrix. "full": start mid-run.
+start = "wake"
+
+# Stop rendering when nobody can see it.
+pause_when_covered = true   # a fullscreen window is on that monitor
+pause_when_locked = true    # the session is locked
+
+# On battery: "slow" raises the update delay to battery_update_delay,
+# "pause" stops the rain, "ignore" keeps the mains settings.
+on_battery = "slow"
+battery_update_delay = 9.375
+
+# Font follows `omarchy font` and the shell's base size (the terminal's 9pt =
+# 12px). Uncomment to pin either.
+font_family = "CaskaydiaCove Nerd Font Mono"
+# font_size = 12
+
+# Spread the rain columns so the first sits flush on the left screen edge and
+# the last flush on the right, putting one full column in each window gap.
+justify_columns = true
+
+# Neon tails: each stream starts on one of 12 pure RGB hues, 30° apart round
+# the colour wheel, listed in hue order (no greys/blacks). One shade per group:
+# the light-to-dark shading comes from tail_fade below.
+#              red     | orange  | amber   | yellow  | lime    | green   | aqua    | cyan    | azure   | blue    | violet  | magenta
+tail_colors = "#ff1f3d | #ff7a00 | #ffb000 | #ffee00 | #9dff00 | #00ff4c | #00ffb3 | #00e5ff | #0091ff | #3d4dff | #9b3dff | #ff2bd6"
+
+# Tail gradient (0..1): each stream is brightest just behind its white head
+# and fades linearly toward the background, down to (1 - tail_fade) at its
+# oldest glyph. 0 = off.
+tail_fade = 0.85
+
+# Hue sweep: from head to tail end each stream moves forward this many
+# colours through tail_colors (wrapping), blended smoothly. 3 of 12 = a
+# quarter of the wheel, e.g. red -> orange -> amber -> yellow. 0 = off.
+tail_hue_shift = 3

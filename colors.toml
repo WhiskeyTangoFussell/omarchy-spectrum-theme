@@ -1,0 +1,37 @@
+# Spectrum — full-rainbow RGB gaming lighting (Razer Chroma "spectrum cycling")
+# on a near-black chassis. Saturated neon hues, white text.
+mode = "dark"
+
+accent = "#00e5ff"
+selection = "#2a2a3d"
+muted = "#50506a"
+
+background = "#0b0b12"
+dark_background = "#07070c"
+darker_background = "#040407"
+lighter_background = "#1a1a26"
+
+foreground = "#eaeaf2"
+dark_foreground = "#6e6e82"
+light_foreground = "#c8c8d6"
+bright_foreground = "#ffffff"
+
+red = "#ff1f3d"
+yellow = "#ffee00"
+orange = "#ff7a00"
+green = "#00ff4c"
+cyan = "#00e5ff"
+blue = "#3d7bff"
+magenta = "#ff2bd6"
+brown = "#8a5a2b"
+
+bright_red = "#ff6b80"
+bright_yellow = "#fff56b"
+bright_green = "#6bff95"
+bright_cyan = "#6bf0ff"
+bright_blue = "#7aa5ff"
+bright_magenta = "#ff7ae6"
+
+# Rainbow window border, like an RGB light strip.
+hyprland_active_border = "rgba(ff1f3dee) rgba(ff7a00ee) rgba(ffee00ee) rgba(00ff4cee) rgba(00e5ffee) rgba(3d4dffee) rgba(ff2bd6ee) 45deg"
+hyprland_inactive_border = "rgba(2a2a3daa)"
