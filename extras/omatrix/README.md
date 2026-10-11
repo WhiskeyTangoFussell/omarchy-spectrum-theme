@@ -32,7 +32,8 @@ while Spectrum is applied.
 ## Plugin updates
 
 `omarchy plugin update` only fast-forwards, so with these commits on top it stops. To update, take the patches
-off, update, then put them back:
+off, update, then put them back. **`git reset --hard` discards any other local edits you made to the omatrix
+plugin**, so commit or save them first:
 
 ```bash
 cd ~/.config/omarchy/plugins/io.github.0x1ocean.omatrix
@@ -42,6 +43,8 @@ omarchy restart shell
 ```
 
 ## Remove
+
+This returns the plugin to stock upstream, again discarding local edits to it:
 
 ```bash
 cd ~/.config/omarchy/plugins/io.github.0x1ocean.omatrix && git reset --hard fe60537 && omarchy restart shell
