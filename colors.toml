@@ -35,3 +35,11 @@ bright_magenta = "#ff7ae6"
 # Rainbow window border, like an RGB light strip.
 hyprland_active_border = "rgba(ff1f3dee) rgba(ff7a00ee) rgba(ffee00ee) rgba(00ff4cee) rgba(00e5ffee) rgba(3d4dffee) rgba(ff2bd6ee) 45deg"
 hyprland_inactive_border = "rgba(2a2a3daa)"
+
+# Matrix rain for the Matrix Screens plugin
+# (https://github.com/WhiskeyTangoFussell/omarchy-matrix-screens): 12 hues around
+# the color wheel with white heads, each stream fading and drifting into the next hues.
+matrix_head_color = "#ffffff"
+matrix_tail_colors = "#ff1f3d | #ff7a00 | #ffb000 | #ffee00 | #9dff00 | #00ff4c | #00ffb3 | #00e5ff | #0091ff | #3d4dff | #9b3dff | #ff2bd6"
+matrix_tail_fade = 0.85
+matrix_tail_hue_shift = 3

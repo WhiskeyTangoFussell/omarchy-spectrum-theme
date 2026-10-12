@@ -64,8 +64,17 @@ omatrix entirely: `omarchy plugin remove io.github.0x1ocean.omatrix`.
 
 ![Spectrum rain: twelve hues, white heads, each stream fading and shifting hue down its tail](screenshots/rain.webp)
 
-The rain is drawn by the [omatrix](https://github.com/0x1ocean/omarchy-omatrix) shell plugin, which turns on
-whenever the active theme ships an `omatrix.toml`:
+The simplest way to get it is the [Matrix Screens](https://github.com/WhiskeyTangoFussell/omarchy-matrix-screens)
+shell plugin, which also puts the rain on the screensaver and lock screen. It reads Spectrum's rain colors from the
+`matrix_*` keys in `colors.toml` (12 hues, white heads, `matrix_tail_fade = 0.85`, `matrix_tail_hue_shift = 3`), so
+the full effect needs no patches:
+
+```bash
+omarchy plugin add https://github.com/WhiskeyTangoFussell/omarchy-matrix-screens --enable
+```
+
+Or use the [omatrix](https://github.com/0x1ocean/omarchy-omatrix) shell plugin, which turns on whenever the active
+theme ships an `omatrix.toml`:
 
 ```bash
 omarchy plugin add https://github.com/0x1ocean/omarchy-omatrix.git --enable
@@ -89,8 +98,8 @@ The rain pauses behind fullscreen windows and while locked, and slows down on ba
 | The theme | Omarchy 4 (shell release with `omarchy theme install`) | — |
 | Icons | `Yaru-magenta-dark` | Ships with Omarchy |
 | Font in the rain | `CaskaydiaCove Nerd Font Mono` | Omarchy's default font |
-| The rain (optional) | [omatrix](https://github.com/0x1ocean/omarchy-omatrix) shell plugin, GPL-3.0-or-later | `omarchy plugin add` |
-| The rainbow rain (optional) | The 4 patches in [`extras/omatrix`](extras/omatrix/README.md) | This repository |
+| The rain (optional) | [Matrix Screens](https://github.com/WhiskeyTangoFussell/omarchy-matrix-screens) or [omatrix](https://github.com/0x1ocean/omarchy-omatrix) shell plugin, GPL-3.0-or-later | `omarchy plugin add` |
+| The rainbow rain with omatrix (optional) | The 4 patches in [`extras/omatrix`](extras/omatrix/README.md) | This repository |
 
 Nothing else is downloaded or installed.
 
