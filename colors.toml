@@ -25,12 +25,14 @@ blue = "#3d7bff"
 magenta = "#ff2bd6"
 brown = "#8a5a2b"
 
-bright_red = "#ff6b80"
-bright_yellow = "#fff56b"
-bright_green = "#6bff95"
-bright_cyan = "#6bf0ff"
-bright_blue = "#7aa5ff"
-bright_magenta = "#ff7ae6"
+# Bright slots carry the in-between hues of the 12-hue wheel (orange, amber,
+# lime, aqua, azure, violet), so the terminal palette spans the whole rainbow.
+bright_red = "#ff7a00"
+bright_yellow = "#ffb000"
+bright_green = "#9dff00"
+bright_cyan = "#00ffb3"
+bright_blue = "#0091ff"
+bright_magenta = "#a355ff"
 
 # Rainbow window border, like an RGB light strip.
 hyprland_active_border = "rgba(ff1f3dee) rgba(ff7a00ee) rgba(ffee00ee) rgba(00ff4cee) rgba(00e5ffee) rgba(3d4dffee) rgba(ff2bd6ee) 45deg"
