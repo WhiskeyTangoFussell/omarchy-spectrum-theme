@@ -66,7 +66,7 @@ omatrix entirely: `omarchy plugin remove io.github.0x1ocean.omatrix`.
 
 The simplest way to get it is the [Matrix Screens](https://github.com/WhiskeyTangoFussell/omarchy-matrix-screens)
 shell plugin, which also puts the rain on the screensaver and lock screen. It reads Spectrum's rain colors from the
-`matrix_*` keys in `colors.toml` (12 hues, white heads, `matrix_tail_fade = 0.85`, `matrix_tail_hue_shift = 3`), so
+`matrix_*` keys in `colors.toml` (12 hues, white heads, `matrix_tail_fade = 0.5`, `matrix_tail_hue_shift = 6`), so
 the full effect needs no patches:
 
 ```bash

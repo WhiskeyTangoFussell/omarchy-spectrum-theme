@@ -41,5 +41,5 @@ hyprland_inactive_border = "rgba(2a2a3daa)"
 # the color wheel with white heads, each stream fading and drifting into the next hues.
 matrix_head_color = "#ffffff"
 matrix_tail_colors = "#ff1f3d | #ff7a00 | #ffb000 | #ffee00 | #9dff00 | #00ff4c | #00ffb3 | #00e5ff | #0091ff | #3d4dff | #9b3dff | #ff2bd6"
-matrix_tail_fade = 0.85
-matrix_tail_hue_shift = 3
+matrix_tail_fade = 0.5
+matrix_tail_hue_shift = 6
